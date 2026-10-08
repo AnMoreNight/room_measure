@@ -108,7 +108,7 @@ export async function encodeMatToDataUrl(mat: Mat): Promise<string> {
     raw: { width: mat.cols, height: mat.rows, channels: mat.channels() },
   })
     .resize({ width: 900, withoutEnlargement: true })
-    .jpeg({ quality: 75 })
+    .jpeg({ quality: 65 })
     .toBuffer();
   return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
 }

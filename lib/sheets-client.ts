@@ -7,8 +7,24 @@ import { createSign } from "node:crypto";
 // Sheets API with that token. No external Google SDK needed — both calls are
 // plain REST.
 //
-// SHEET_RANGE/column order below is a best guess (Brand | Model | WidthMm |
-// DepthMm | HeightMm) — correct it once the real sheet's layout is confirmed.
+// SHEET_RANGE/column order confirmed against the real sheet: Brand | Model |
+// PartType (Japanese: 大便器 toilet bowl, タンク tank, タンクレストイレ
+// tankless toilet, 洗浄便座 washlet seat) | WidthMm | a second dimension
+// whose meaning depends on partType (front-to-back length for a bowl/
+// tankless unit, height for a tank, depth for a washlet seat — NOT a
+// consistent "depth" or "height" across rows, so it's kept as an untyped
+// secondDimensionMm rather than named depth/height).
+//
+// Important caveat for callers: widthMm is the WIDTH OF WHATEVER PART WAS
+// PHOTOGRAPHED, not necessarily the toilet's overall installed footprint.
+// A 洗浄便座 (washlet seat) row's width (e.g. ~507mm) is a very different
+// physical thing from a タンク (tank) or 大便器 (bowl) row's width
+// (~390-400mm) for the same installation. lib/measure/wall-detection.ts's
+// toiletWidthLine specifically measures the TANK's width — matching a
+// washlet-seat row here would silently produce a wrong real-world size, not
+// an error. The capture guide's model-label step currently says to
+// photograph "タンク側面や便座の裏" (tank side OR seat underside), which
+// can't guarantee a tank photo — see room-size.ts for where this surfaces.
 // ---------------------------------------------------------------------------
 
 const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
@@ -18,9 +34,9 @@ const SHEET_RANGE = "Sheet1!A2:E";
 export type ToiletSize = {
   brand: string;
   model: string;
+  partType: string;
   widthMm: number;
-  depthMm: number;
-  heightMm: number;
+  secondDimensionMm: number;
 };
 
 type ServiceAccount = {
@@ -42,7 +58,9 @@ function loadServiceAccount(): ServiceAccount {
     throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON の形式が不正です(JSONとして解析できません)。");
   }
   if (!parsed.client_email || !parsed.private_key) {
-    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON の形式が不正です(client_email/private_keyが必要です)。");
+    throw new Error(
+      "GOOGLE_SERVICE_ACCOUNT_JSON の形式が不正です(client_email/private_keyが必要です)。",
+    );
   }
   return { client_email: parsed.client_email, private_key: parsed.private_key };
 }
@@ -97,7 +115,10 @@ async function getAccessToken(): Promise<string> {
   if (!json.access_token) {
     throw new Error("Google認証トークンの取得に失敗しました。");
   }
-  cachedToken = { value: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000 };
+  cachedToken = {
+    value: json.access_token,
+    expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000,
+  };
   return cachedToken.value;
 }
 
@@ -133,18 +154,24 @@ export async function lookupToiletSize(brand: string, model: string): Promise<To
   const targetBrand = normalize(brand);
 
   for (const row of rows) {
-    const [rowBrand, rowModel, rowWidth, rowDepth, rowHeight] = row;
+    const [rowBrand, rowModel, rowPartType, rowWidth, rowSecondDimension] = row;
     if (!rowBrand || !rowModel) continue;
     if (normalize(rowModel) !== targetModel) continue;
     const normalizedRowBrand = normalize(rowBrand);
-    if (!normalizedRowBrand.includes(targetBrand) && !targetBrand.includes(normalizedRowBrand)) continue;
+    if (!normalizedRowBrand.includes(targetBrand) && !targetBrand.includes(normalizedRowBrand))
+      continue;
 
     const widthMm = Number(rowWidth);
-    const depthMm = Number(rowDepth);
-    const heightMm = Number(rowHeight);
-    if (![widthMm, depthMm, heightMm].every((n) => Number.isFinite(n) && n > 0)) continue;
+    if (!Number.isFinite(widthMm) || widthMm <= 0) continue;
+    const secondDimensionMm = Number(rowSecondDimension);
 
-    return { brand: rowBrand, model: rowModel, widthMm, depthMm, heightMm };
+    return {
+      brand: rowBrand,
+      model: rowModel,
+      partType: rowPartType ?? "",
+      widthMm,
+      secondDimensionMm: Number.isFinite(secondDimensionMm) ? secondDimensionMm : 0,
+    };
   }
   return null;
 }

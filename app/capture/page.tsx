@@ -43,8 +43,8 @@ function loadImageElement(blob: Blob): Promise<HTMLImageElement> {
 // than this produces. Browsers draw <img> already rotated per EXIF, so the
 // resulting canvas output is correctly oriented with no separate handling
 // needed.
-const UPLOAD_MAX_DIMENSION = 1600;
-const UPLOAD_JPEG_QUALITY = 0.82;
+const UPLOAD_MAX_DIMENSION = 1280;
+const UPLOAD_JPEG_QUALITY = 0.7;
 
 async function resizeImageToDataUrl(blob: Blob): Promise<string> {
   const img = await loadImageElement(blob);
@@ -99,21 +99,37 @@ export default function CapturePage() {
     setSubmitPhase("submitting");
     setSubmitError(null);
     try {
-      const [backWallBlob, floorBlob] = await Promise.all([
+      const [backWallBlob, floorBlob, modelLabelBlob, plumbingBlob] = await Promise.all([
         fetch(photos["back-wall"]!).then((r) => r.blob()),
         fetch(photos["floor"]!).then((r) => r.blob()),
+        fetch(photos["model-label"]!).then((r) => r.blob()),
+        fetch(photos["plumbing"]!).then((r) => r.blob()),
       ]);
-      const [backWallPhoto, floorPhoto] = await Promise.all([
+      const [backWallPhoto, floorPhoto, modelLabelPhoto, plumbingPhoto] = await Promise.all([
         resizeImageToDataUrl(backWallBlob),
         resizeImageToDataUrl(floorBlob),
+        resizeImageToDataUrl(modelLabelBlob),
+        // plumbing isn't analyzed server-side (see room-size.ts/measure
+        // route) — resized client-side purely so /result can still show it
+        // in the "what you uploaded" list.
+        resizeImageToDataUrl(plumbingBlob),
       ]);
-      const result = await measureRatios(backWallPhoto, floorPhoto);
+      const result = await measureRatios(backWallPhoto, floorPhoto, modelLabelPhoto);
       if (!result.ok) {
         setSubmitError(result.error);
         setSubmitPhase("error");
         return;
       }
-      storeSubmission({ result, submittedAt: new Date().toISOString() });
+      storeSubmission({
+        result,
+        photos: {
+          "back-wall": backWallPhoto,
+          floor: floorPhoto,
+          "model-label": modelLabelPhoto,
+          plumbing: plumbingPhoto,
+        },
+        submittedAt: new Date().toISOString(),
+      });
       setSubmitPhase("done");
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "写真の処理に失敗しました。");

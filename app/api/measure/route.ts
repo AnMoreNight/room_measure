@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { measureWallRatios } from "@/lib/measure/wall-ratios";
 import { measureFloorRatio } from "@/lib/measure/floor-ratio";
+import { resolveRoomSize } from "@/lib/measure/room-size";
 
 // Each of wall/floor detection samples the vision model 3x (see
 // aggregate-samples.ts); o3 is slow (tens of seconds to a few minutes per
@@ -27,6 +28,7 @@ const dataUrlSchema = z
 const requestSchema = z.object({
   backWallPhoto: dataUrlSchema,
   floorPhoto: dataUrlSchema,
+  modelLabelPhoto: dataUrlSchema.optional(),
 });
 
 function dataUrlToBuffer(dataUrl: string): Buffer {
@@ -52,15 +54,28 @@ export async function POST(request: Request) {
     if (!wall.ok) return NextResponse.json({ ok: false, error: wall.error }, { status: 422 });
     if (!floor.ok) return NextResponse.json({ ok: false, error: floor.error }, { status: 422 });
 
+    const ratios = {
+      widthOverToilet: wall.ratios.widthOverToilet,
+      heightOverWidth: wall.ratios.heightOverWidth,
+      lengthOverWidth: floor.ratio.lengthOverWidth,
+    };
+
+    // Real-world size is a bonus on top of the ratios, never a condition for
+    // returning them — any failure here (no label photo, unreadable label,
+    // model not in the sheet, sheet API error) just means size stays null
+    // with a reason, while ratios/annotated images are always returned.
+    const { size, reason: sizeUnavailableReason } = await resolveRoomSize(
+      parsed.data.modelLabelPhoto ? dataUrlToBuffer(parsed.data.modelLabelPhoto) : null,
+      ratios,
+    );
+
     return NextResponse.json({
       ok: true,
-      ratios: {
-        widthOverToilet: wall.ratios.widthOverToilet,
-        heightOverWidth: wall.ratios.heightOverWidth,
-        lengthOverWidth: floor.ratio.lengthOverWidth,
-      },
+      ratios,
       annotatedWallImage: wall.annotatedImage,
       annotatedFloorImage: floor.annotatedImage,
+      size,
+      sizeUnavailableReason,
     });
   } catch (error) {
     console.error("measure failed", error);
