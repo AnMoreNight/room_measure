@@ -24,13 +24,45 @@ import { measureRatios, storeSubmission } from "@/lib/api-client";
 type Phase = "instructions" | "checking" | "review";
 type SubmitPhase = "idle" | "submitting" | "done" | "error";
 
-function blobToDataUrl(blob: Blob): Promise<string> {
+function loadImageElement(blob: Blob): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error("画像の読み込みに失敗しました。"));
-    reader.readAsDataURL(blob);
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("画像の読み込みに失敗しました。"));
+    img.src = URL.createObjectURL(blob);
   });
+}
+
+// Vercel's serverless functions cap the total request body at 4.5MB — a
+// platform limit, confirmed in production as a raw 413 before /api/measure
+// even runs. Full-resolution phone photos (often 3-8MB each) blow past
+// that easily, especially two of them plus base64's ~33% size overhead.
+// Resizing before upload isn't a quality tradeoff here: the server
+// downscales further anyway (1536px for the OpenAI vision call, 900px for
+// the annotated result image), so nothing downstream ever sees more detail
+// than this produces. Browsers draw <img> already rotated per EXIF, so the
+// resulting canvas output is correctly oriented with no separate handling
+// needed.
+const UPLOAD_MAX_DIMENSION = 1600;
+const UPLOAD_JPEG_QUALITY = 0.82;
+
+async function resizeImageToDataUrl(blob: Blob): Promise<string> {
+  const img = await loadImageElement(blob);
+  try {
+    const scale = Math.min(1, UPLOAD_MAX_DIMENSION / Math.max(img.naturalWidth, img.naturalHeight));
+    const width = Math.round(img.naturalWidth * scale);
+    const height = Math.round(img.naturalHeight * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("画像の処理に失敗しました。");
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", UPLOAD_JPEG_QUALITY);
+  } finally {
+    URL.revokeObjectURL(img.src);
+  }
 }
 
 export default function CapturePage() {
@@ -72,8 +104,8 @@ export default function CapturePage() {
         fetch(photos["floor"]!).then((r) => r.blob()),
       ]);
       const [backWallPhoto, floorPhoto] = await Promise.all([
-        blobToDataUrl(backWallBlob),
-        blobToDataUrl(floorBlob),
+        resizeImageToDataUrl(backWallBlob),
+        resizeImageToDataUrl(floorBlob),
       ]);
       const result = await measureRatios(backWallPhoto, floorPhoto);
       if (!result.ok) {
@@ -195,7 +227,9 @@ export default function CapturePage() {
             <span className="mx-auto flex size-16 items-center justify-center rounded-full bg-success text-success-foreground">
               <Check className="size-8" />
             </span>
-            <h1 className="mt-6 font-display text-3xl font-semibold">すべての写真を受け付けました</h1>
+            <h1 className="mt-6 font-display text-3xl font-semibold">
+              すべての写真を受け付けました
+            </h1>
             <p className="mt-3 text-muted-foreground">
               ありがとうございます。4枚の写真はすべて受け付けられました。
             </p>
@@ -284,16 +318,12 @@ export default function CapturePage() {
               )}
             >
               <UploadCloud className="mx-auto size-7 text-muted-foreground" />
-              <p className="mt-2 text-sm text-muted-foreground">
-                ここに写真をドラッグ&ドロップ
-              </p>
+              <p className="mt-2 text-sm text-muted-foreground">ここに写真をドラッグ&ドロップ</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 またはスマートフォンならカメラで直接撮影できます
               </p>
             </div>
-            {fileError && (
-              <p className="mt-2 text-center text-sm text-destructive">{fileError}</p>
-            )}
+            {fileError && <p className="mt-2 text-center text-sm text-destructive">{fileError}</p>}
 
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Button size="lg" className="w-full" onClick={() => cameraInputRef.current?.click()}>

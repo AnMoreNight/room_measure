@@ -13,10 +13,16 @@ import { measureFloorRatio } from "@/lib/measure/floor-ratio";
 // serverless functions support.
 export const maxDuration = 300;
 
+// Vercel's serverless functions hard-cap the total request body at 4.5MB
+// (a platform limit, not configurable here) — confirmed in production as a
+// raw 413 before this route even runs. The client (capture/page.tsx) now
+// resizes photos before upload specifically to stay well under that, so
+// this per-field max is a defensive backstop giving a clear Japanese error
+// if it's ever bypassed (e.g. a direct API call), not the primary guard.
 const dataUrlSchema = z
   .string()
   .regex(/^data:image\/(png|jpe?g|webp);base64,/i, "対応していない画像形式です。")
-  .max(12_000_000, "画像サイズが大きすぎます。");
+  .max(3_000_000, "画像サイズが大きすぎます。");
 
 const requestSchema = z.object({
   backWallPhoto: dataUrlSchema,
